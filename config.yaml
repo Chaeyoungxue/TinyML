@@ -4,13 +4,11 @@ train_dir: ".\\Data\\{dataset}\\train"
 test_normal_dir: ".\\Data\\{dataset}\\test\\no"
 test_anomaly_dir: ".\\Data\\{dataset}\\test\\ab"
 
-#特征提取
 n_mels: 64
 frames: 5
 n_fft: 1024
 hop_length: 512
 
-#模型参数
 num_epochs: 40
 use_conv: 1
 use_attention: 1

@@ -41,7 +41,6 @@ args = parser.parse_args()
 config = load_config(args.config)
 if args.dataset:
     config['dataset'] = args.dataset
-# 动态生成路径
 config['train_dir'] = config['train_dir'].format(dataset=config['dataset'])
 config['test_normal_dir'] = config['test_normal_dir'].format(dataset=config['dataset'])
 config['test_anomaly_dir'] = config['test_anomaly_dir'].format(dataset=config['dataset'])

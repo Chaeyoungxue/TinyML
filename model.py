@@ -34,7 +34,6 @@ class Autoencoder(nn.Module):
             conv1_output = self.conv1(x_sequence)
             conv2_output = self.conv2(conv1_output)
             conv3_output = self.conv3(conv2_output)
-            # 去掉最后一个维度
             conv1_output = conv1_output.squeeze(1)
             conv2_output = conv2_output.squeeze(1)
             conv3_output = conv3_output.squeeze(1)
