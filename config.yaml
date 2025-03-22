@@ -4,12 +4,29 @@ train_dir: ".\\Data\\{dataset}\\train"
 test_normal_dir: ".\\Data\\{dataset}\\test\\no"
 test_anomaly_dir: ".\\Data\\{dataset}\\test\\ab"
 
+# 特征提取参数
 n_mels: 64
 frames: 5
 n_fft: 1024
 hop_length: 512
 
+# 训练参数
 num_epochs: 40
+
+# 模型参数
+model_type: 'deep_autoencoder'  # 可选: 'deep_autoencoder', 'simple_autoencoder', 'isolation_forest', 'lof'
+
+# 深度自编码器参数
 use_conv: 1
 use_attention: 1
 n_heads: 4
+
+# 简单自编码器参数
+hidden_dims: 32
+
+# Isolation Forest参数
+n_estimators: 100
+contamination: 'auto'
+
+# LOF参数
+n_neighbors: 20

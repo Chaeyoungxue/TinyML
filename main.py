@@ -10,7 +10,7 @@ import os
 from sklearn.metrics import precision_recall_curve, auc, roc_curve
 from tqdm import tqdm
 from torch.utils.data import DataLoader, TensorDataset
-from model import Autoencoder
+from model import DeepAutoencoder, SimpleAutoencoder, IsolationForestModel, LOFModel
 from utils import generate_dataset, load_sound_file, extract_signal_features
 
 def load_config(config_path):
@@ -34,6 +34,10 @@ parser.add_argument('--num_epochs', type=int, default=40,help='Num epochs')
 parser.add_argument('--use_conv', type=int, default=1,help='Whether to use conv layers')
 parser.add_argument('--use_attention', type=int, default=1,help='Whether to use multi-head attention')
 parser.add_argument('--n_heads', type=int, default=4,help='Number of heads in multi-head attention')
+parser.add_argument('--model_type', type=str, default=None, help='Model type: deep_autoencoder, simple_autoencoder, isolation_forest, lof')
+parser.add_argument('--hidden_dims', type=int, default=None, help='Hidden dimensions for simple autoencoder')
+parser.add_argument('--n_estimators', type=int, default=None, help='Number of estimators for Isolation Forest')
+parser.add_argument('--n_neighbors', type=int, default=None, help='Number of neighbors for LOF')
 
 args = parser.parse_args()
 
@@ -61,6 +65,14 @@ if args.use_attention is not None:
     config['use_attention'] = args.use_attention
 if args.n_heads is not None:
     config['n_heads'] = args.n_heads
+if args.model_type is not None:
+    config['model_type'] = args.model_type
+if args.hidden_dims is not None:
+    config['hidden_dims'] = args.hidden_dims
+if args.n_estimators is not None:
+    config['n_estimators'] = args.n_estimators
+if args.n_neighbors is not None:
+    config['n_neighbors'] = args.n_neighbors
 
 # 打印最终的配置
 print("Final Configuration:")
@@ -84,35 +96,109 @@ train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True)
 
 input_shape = config['n_mels'] * (config['frames']-1)
 
-model = Autoencoder(input_shape, use_conv=config['use_conv'], use_attention=config['use_attention'], n_heads=config['n_heads'])
-total_params = sum(p.numel() for p in model.parameters())
-print(f"Total parameters: {total_params}")
-criterion = nn.MSELoss()
-optimizer = optim.Adam(model.parameters(), lr=1e-3)
+# 根据配置选择模型
+if config['model_type'] == 'deep_autoencoder':
+    model = DeepAutoencoder(input_shape, use_conv=config['use_conv'], use_attention=config['use_attention'], n_heads=config['n_heads'])
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Total parameters: {total_params}")
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    
+    # 训练深度自编码器
+    for epoch in range(config['num_epochs']):
+        model.train()
+        total_loss = 0
+        epochs = config['num_epochs']
+        for batch in train_loader:
+            inputs, targets = batch
+            cen_inputs = inputs[:, config['n_mels'] * (config['frames']//2):config['n_mels'] * (config['frames']//2+1)]
+            cen_targets = targets[:, config['n_mels'] * (config['frames']//2):config['n_mels'] * (config['frames']//2+1)]
+            inputs = torch.cat((inputs[:, :config['n_mels'] * (config['frames']//2)], inputs[:, config['n_mels'] * (config['frames']//2+1):]), dim=1)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, cen_targets)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        print(f'Epoch [{epoch + 1}/{epochs}], Loss: {total_loss / len(train_loader):.4f}')
 
-for epoch in range(config['num_epochs']):
-    model.train()
-    total_loss = 0
-    epochs= config['num_epochs']
-    for batch in train_loader:
-        inputs, targets = batch
-        cen_inputs = inputs[:, config['n_mels'] * (config['frames']//2):config['n_mels'] * (config['frames']//2+1)]
-        cen_targets = targets[:, config['n_mels'] * (config['frames']//2):config['n_mels'] * (config['frames']//2+1)]
-        inputs = torch.cat((inputs[:, :config['n_mels'] * (config['frames']//2)], inputs[:, config['n_mels'] * (config['frames']//2+1):]), dim=1)
-        optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = criterion(outputs, cen_targets)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-    print(f'Epoch [{epoch + 1}/{epochs}], Loss: {total_loss / len(train_loader):.4f}')
+elif config['model_type'] == 'simple_autoencoder':
+    model = SimpleAutoencoder(input_shape, hidden_dims=config['hidden_dims'])
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Total parameters: {total_params}")
+    # 使用fit方法训练简单自编码器
+    model.fit(X_train, epochs=config['num_epochs'])
 
-# Modified reconstruction function for PyTorch
-def reconstruction(model, test_files, test_labels, n_mels, frames, n_fft):
-    model.eval()
-    reconstruction_errors = []
+elif config['model_type'] == 'isolation_forest':
+    model = IsolationForestModel(
+        input_dims=input_shape,
+        n_estimators=config['n_estimators'],
+        contamination=config['contamination']
+    )
+    # 训练隔离森林模型
+    model.fit(X_train)
+    print("Isolation Forest model trained successfully")
 
-    with torch.no_grad():
+elif config['model_type'] == 'lof':
+    model = LOFModel(
+        input_dims=input_shape,
+        n_neighbors=config['n_neighbors'],
+        contamination=config['contamination']
+    )
+    # 训练LOF模型
+    model.fit(X_train)
+    print("LOF model trained successfully")
+
+else:
+    raise ValueError(f"Unknown model type: {config['model_type']}")
+
+print(f"Model type: {config['model_type']} initialized and trained successfully")
+
+# 计算异常分数的函数，适用于所有模型类型
+def get_anomaly_scores(model, test_files, test_labels, n_mels, frames, n_fft, hop_length):
+    anomaly_scores = []
+    
+    # 对于深度自编码器模型的特殊处理
+    if model.model_type == 'deep_autoencoder':
+        model.eval()
+        with torch.no_grad():
+            for eval_filename in tqdm(test_files, total=len(test_files)):
+                signal, sr = load_sound_file(eval_filename)
+                eval_features = extract_signal_features(
+                    signal,
+                    sr,
+                    n_mels=n_mels,
+                    frames=frames,
+                    n_fft=n_fft)
+
+                features_tensor = torch.FloatTensor(eval_features)
+                cen_test = features_tensor[:, n_mels * (frames//2):n_mels * (frames//2+1)]
+                features_inputs = torch.cat((features_tensor[:, :n_mels * (frames//2)], features_tensor[:, n_mels * (frames//2+1):]), dim=1)
+                prediction = model(features_inputs)
+
+                mse = torch.mean(torch.mean((cen_test - prediction) ** 2, dim=1))
+                anomaly_scores.append(mse.item())
+    
+    # 对于简单自编码器模型
+    elif model.model_type == 'simple_autoencoder':
+        model.eval()
+        with torch.no_grad():
+            for eval_filename in tqdm(test_files, total=len(test_files)):
+                signal, sr = load_sound_file(eval_filename)
+                eval_features = extract_signal_features(
+                    signal,
+                    sr,
+                    n_mels=n_mels,
+                    frames=frames,
+                    n_fft=n_fft)
+
+                features_tensor = torch.FloatTensor(eval_features)
+                prediction = model(features_tensor)
+                mse = torch.mean(torch.mean((features_tensor - prediction) ** 2, dim=1))
+                anomaly_scores.append(mse.item())
+    
+    # 对于Isolation Forest和LOF模型
+    elif model.model_type in ['isolation_forest', 'lof']:
         for eval_filename in tqdm(test_files, total=len(test_files)):
             signal, sr = load_sound_file(eval_filename)
             eval_features = extract_signal_features(
@@ -121,22 +207,18 @@ def reconstruction(model, test_files, test_labels, n_mels, frames, n_fft):
                 n_mels=n_mels,
                 frames=frames,
                 n_fft=n_fft)
-
-            features_tensor = torch.FloatTensor(eval_features)
-            cen_test = features_tensor[:, config['n_mels'] * (config['frames']//2):config['n_mels'] * (config['frames']//2+1)]
-            features_inputs = torch.cat((features_tensor[:, :config['n_mels'] * (config['frames']//2)], features_tensor[:, config['n_mels'] * (config['frames']//2+1):]), dim=1)
-            prediction = model(features_inputs)
-
-            mse = torch.mean(torch.mean((cen_test - prediction) ** 2, dim=1))
-            reconstruction_errors.append(mse.item())
-
-    return reconstruction_errors
+            
+            # 获取每个文件的平均异常分数
+            file_scores = model.get_anomaly_score(eval_features)
+            anomaly_scores.append(np.mean(file_scores))
+    
+    return anomaly_scores
 
 
 test_files = test_normal_files + test_anomaly_files
 test_labels = [0] * len(test_normal_files) + [1] * len(test_anomaly_files)
 
-reconstruction_errors = reconstruction(model, test_files, test_labels, config['n_mels'], config['frames'], config['n_fft'])
+reconstruction_errors = get_anomaly_scores(model, test_files, test_labels, config['n_mels'], config['frames'], config['n_fft'], config['hop_length'])
 """
 thresh = np.percentile(reconstruction_errors, 50)
 pred_labels = np.array(reconstruction_errors) > thresh
